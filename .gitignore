@@ -47,3 +47,8 @@ htmlcov/
 config.ini
 secrets.json
 .env
+
+# Pytest cache
+.pytest_cache/
+.coverage
+htmlcov/
