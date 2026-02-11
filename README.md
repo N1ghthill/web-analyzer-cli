@@ -149,6 +149,16 @@ curl -H 'x-api-key: troque-por-uma-chave-forte' \
   http://127.0.0.1:8000/api/jobs/<job_id>
 ```
 
+Observacao de runtime:
+
+- Em Vercel, a fila em memoria fica desabilitada por padrao para evitar jobs presos.
+- Nesse caso, `use_lighthouse=true` roda de forma sincrona.
+- Para forcar fila em ambientes persistentes, configure:
+
+```bash
+export WEB_ANALYZER_ENABLE_BACKGROUND_QUEUE="1"
+```
+
 ## Deploy no Vercel
 
 Este repo ja inclui `app.py` como entrypoint ASGI.
@@ -174,6 +184,7 @@ No Vercel, configure as variaveis de ambiente:
 - `WEB_ANALYZER_LIGHTHOUSE_THROTTLING_METHOD` (opcional)
 - `WEB_ANALYZER_LIGHTHOUSE_MAX_WAIT_MS` (opcional)
 - `WEB_ANALYZER_LIGHTHOUSE_CACHE_SECONDS` (opcional)
+- `WEB_ANALYZER_ENABLE_BACKGROUND_QUEUE` (opcional)
 
 ## Seguranca da API
 

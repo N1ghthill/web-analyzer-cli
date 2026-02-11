@@ -125,6 +125,15 @@ curl -H 'x-api-key: troque-por-uma-chave-forte' \
   http://127.0.0.1:8000/api/jobs/<job_id>
 ```
 
+Controle de fila:
+
+```bash
+export WEB_ANALYZER_ENABLE_BACKGROUND_QUEUE="1"
+```
+
+- Em Vercel, por padrao a fila em memoria fica desativada.
+- Quando a fila estiver desativada, `use_lighthouse=true` roda de forma sincrona.
+
 Campos do payload:
 
 - `url` (string)

@@ -20,7 +20,7 @@ from .analyzer import run_basic_analysis, run_full_audit
 from .url_safety import validate_public_url
 
 APP_TITLE = "Web Analyzer API"
-APP_VERSION = "2.3.1"
+APP_VERSION = "2.3.2"
 
 
 def _utcnow() -> str:
@@ -95,6 +95,13 @@ JOBS: Dict[str, Dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
 WORKER_STARTED = False
 WORKER_LOCK = threading.Lock()
+
+
+def _background_queue_enabled() -> bool:
+    running_in_vercel = bool(os.getenv("VERCEL"))
+    default_enabled = "0" if running_in_vercel else "1"
+    raw = os.getenv("WEB_ANALYZER_ENABLE_BACKGROUND_QUEUE", default_enabled).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _ensure_worker_started() -> None:
@@ -622,6 +629,7 @@ def health() -> Dict[str, Any]:
         "status": "ok",
         "version": APP_VERSION,
         "auth_configured": bool(_load_api_keys()),
+        "background_queue_enabled": _background_queue_enabled(),
         "queue_size": JOB_QUEUE.qsize(),
         "rate_limit": {
             "requests": _int_env("WEB_ANALYZER_RATE_LIMIT_REQUESTS", 20, minimum=1),
@@ -649,7 +657,7 @@ def analyze(payload: AnalyzeRequest, request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Heavy Lighthouse runs go through async queue.
-    if payload.mode == "full" and payload.use_lighthouse:
+    if payload.mode == "full" and payload.use_lighthouse and _background_queue_enabled():
         queued = _queue_heavy_job(
             url=safe_url,
             timeout=payload.timeout,
@@ -673,7 +681,7 @@ def analyze(payload: AnalyzeRequest, request: Request):
         result = run_full_audit(
             safe_url,
             timeout=payload.timeout,
-            use_lighthouse=False,
+            use_lighthouse=payload.use_lighthouse,
         )
 
     if result.get("error"):
