@@ -1,39 +1,51 @@
 # USAGE
 
+## Instalacao como pacote (recomendado)
+
+```bash
+pipx install git+https://github.com/N1ghthill/web-analyzer-cli.git
+```
+
+Comandos instalados:
+
+- `wa` (modo normal)
+- `waf` (full audit)
+- `wab` (lote por arquivo, ja em full)
+
 ## Basico
 
 ```bash
-python main.py https://example.com
+wa https://example.com
 ```
 
 ## Full audit
 
 ```bash
-python main.py https://example.com --full
+waf https://example.com
 ```
 
 ## Full audit em JSON
 
 ```bash
-python main.py https://example.com --full --format json
+waf https://example.com -j
 ```
 
 ## Sem Lighthouse
 
 ```bash
-python main.py https://example.com --full --no-lighthouse
+waf https://example.com -n
 ```
 
 ## Timeout customizado
 
 ```bash
-python main.py https://example.com --full --timeout 20
+waf https://example.com -t 20
 ```
 
 ## Lote por arquivo
 
 ```bash
-python main.py --arquivo urls.txt --full --report ./reports
+wab urls.txt -j -r ./reports
 ```
 
 `urls.txt`:
@@ -59,3 +71,4 @@ A nota final e ponderada pelos pesos abaixo:
 - Lighthouse e opcional.
 - Sem Lighthouse, as notas continuam sendo calculadas com checks locais.
 - Com Lighthouse, as notas ficam mais proximas de um teste real de navegador.
+- Se preferir, ainda pode usar `web-analyzer` ou `python main.py`.

@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from src import analyzer
-from src.main import build_parser
+from src.main import build_parser, main_batch, main_full
 
 
 class FakeResponse:
@@ -102,17 +102,43 @@ class AnalyzerTests(unittest.TestCase):
 class CliParserTests(unittest.TestCase):
     def test_parser_accepts_full_and_format(self):
         parser = build_parser()
-        args = parser.parse_args(["https://example.com", "--full", "--format", "json", "--timeout", "15"])
+        args = parser.parse_args(["https://example.com", "-F", "-o", "json", "-t", "15"])
         self.assertEqual(args.url, "https://example.com")
         self.assertTrue(args.full)
         self.assertEqual(args.format, "json")
         self.assertEqual(args.timeout, 15)
+
+    def test_parser_accepts_json_shortcut(self):
+        parser = build_parser()
+        args = parser.parse_args(["https://example.com", "-j"])
+        self.assertEqual(args.url, "https://example.com")
+        self.assertTrue(args.json)
 
     def test_parser_accepts_file_mode(self):
         parser = build_parser()
         args = parser.parse_args(["--arquivo", "urls.txt", "--full"])
         self.assertEqual(args.arquivo, "urls.txt")
         self.assertTrue(args.full)
+
+    @patch("src.main.main")
+    def test_main_full_wrapper(self, mock_main):
+        mock_main.return_value = 0
+        rc = main_full(["https://example.com", "-j"])
+        self.assertEqual(rc, 0)
+        mock_main.assert_called_once_with(["--full", "https://example.com", "-j"])
+
+    @patch("src.main.main")
+    def test_main_batch_wrapper(self, mock_main):
+        mock_main.return_value = 0
+        rc = main_batch(["urls.txt", "-j", "-r", "./reports"])
+        self.assertEqual(rc, 0)
+        mock_main.assert_called_once_with(
+            ["--arquivo", "urls.txt", "--full", "-j", "-r", "./reports"]
+        )
+
+    def test_main_batch_wrapper_requires_file(self):
+        rc = main_batch([])
+        self.assertEqual(rc, 1)
 
 
 if __name__ == "__main__":

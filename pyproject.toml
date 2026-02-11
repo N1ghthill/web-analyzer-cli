@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "web-analyzer-cli"
+version = "2.1.0"
+description = "CLI tool para auditoria completa de qualidade de websites"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+  { name = "Irving Ruas", email = "irving@ruas.dev.br" }
+]
+dependencies = [
+  "requests>=2.25.1",
+  "beautifulsoup4>=4.9.3",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/N1ghthill/web-analyzer-cli"
+Repository = "https://github.com/N1ghthill/web-analyzer-cli"
+
+[project.scripts]
+web-analyzer = "src.main:main"
+wa = "src.main:main"
+waf = "src.main:main_full"
+wab = "src.main:main_batch"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

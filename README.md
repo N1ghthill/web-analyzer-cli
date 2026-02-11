@@ -23,12 +23,20 @@ Criterios do modo full:
 
 ## Instalacao
 
+Opcao 1 (recomendada, instala comando global com isolamento):
+
+```bash
+pipx install git+https://github.com/N1ghthill/web-analyzer-cli.git
+```
+
+Opcao 2 (local no repositorio):
+
 ```bash
 git clone https://github.com/N1ghthill/web-analyzer-cli.git
 cd web-analyzer-cli
 python -m venv .venv
 source .venv/bin/activate  # no Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -e .
 ```
 
 Opcional para auditoria mais completa de performance/SEO/acessibilidade:
@@ -40,20 +48,26 @@ npm install -g lighthouse
 ## Uso rapido
 
 ```bash
-# Basico
-python main.py https://example.com
+# Comandos curtos (apos instalar)
+wa https://example.com
 
 # Full audit com score por criterio + score geral
-python main.py https://example.com --full
+waf https://example.com
 
 # Full audit em JSON
-python main.py https://example.com --full --format json
+waf https://example.com -j
 
 # Salvar relatorio
-python main.py https://example.com --full --format json --report ./report.json
+waf https://example.com -j -r ./report.json
 
 # Ler varias URLs de um arquivo
-python main.py --arquivo urls.txt --full --report ./reports
+wab urls.txt -j -r ./reports
+```
+
+Tambem funciona com comando completo:
+
+```bash
+web-analyzer https://example.com --full --format json --report ./report.json
 ```
 
 ## Formato de saida (modo full)
@@ -66,11 +80,10 @@ python main.py --arquivo urls.txt --full --report ./reports
 - `criteria.best_practices.score`
 - `lighthouse.available` (true/false)
 
-## Comando instalado via pip
+## Rodar sem instalar
 
 ```bash
-pip install -e .
-web-analyzer https://example.com --full
+python main.py https://example.com --full
 ```
 
 ## Documentacao
