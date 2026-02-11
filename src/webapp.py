@@ -20,7 +20,7 @@ from .analyzer import run_basic_analysis, run_full_audit
 from .url_safety import validate_public_url
 
 APP_TITLE = "Web Analyzer API"
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.3.1"
 
 
 def _utcnow() -> str:

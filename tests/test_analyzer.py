@@ -2,6 +2,7 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from unittest.mock import patch
+import os
 
 from src import analyzer
 from src.main import build_parser, main_batch, main_full
@@ -99,6 +100,64 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(result["mode"], "basic")
         self.assertEqual(result["url"], "https://example.com")
         self.assertIn("boom", result["error"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_lighthouse_profile_defaults_on_local(self):
+        profile = analyzer._lighthouse_runtime_profile()
+        self.assertEqual(profile["form_factor"], "mobile")
+        self.assertEqual(profile["throttling_method"], "simulate")
+
+    @patch.dict(os.environ, {"VERCEL": "1"}, clear=False)
+    def test_lighthouse_profile_defaults_on_vercel(self):
+        profile = analyzer._lighthouse_runtime_profile()
+        self.assertEqual(profile["form_factor"], "desktop")
+        self.assertEqual(profile["throttling_method"], "provided")
+
+    @patch("src.analyzer.shutil.which", return_value="/usr/bin/lighthouse")
+    @patch("src.analyzer.subprocess.run")
+    @patch.dict(
+        os.environ,
+        {
+            "WEB_ANALYZER_LIGHTHOUSE_CACHE_SECONDS": "1800",
+            "WEB_ANALYZER_LIGHTHOUSE_FORM_FACTOR": "desktop",
+            "WEB_ANALYZER_LIGHTHOUSE_THROTTLING_METHOD": "provided",
+        },
+        clear=False,
+    )
+    def test_lighthouse_uses_cache(self, mock_run, _mock_which):
+        analyzer.LIGHTHOUSE_CACHE.clear()
+
+        class FakeProcess:
+            returncode = 0
+            stdout = (
+                '{"categories":{"performance":{"score":0.8},"accessibility":{"score":0.9},'
+                '"best-practices":{"score":0.7},"seo":{"score":0.6}},'
+                '"audits":{"first-contentful-paint":{"numericValue":1000}}}'
+            )
+            stderr = ""
+
+        mock_run.return_value = FakeProcess()
+
+        first = analyzer._run_lighthouse("https://example.com", timeout=60)
+        second = analyzer._run_lighthouse("https://example.com", timeout=60)
+
+        self.assertTrue(first["available"])
+        self.assertFalse(first["cached"])
+        self.assertTrue(second["available"])
+        self.assertTrue(second["cached"])
+        self.assertEqual(mock_run.call_count, 1)
+
+    def test_performance_score_balanced_weighting(self):
+        lighthouse = {"scores": {"performance": 40}}
+        scored = analyzer._score_performance(
+            response_time=0.3,
+            content_size_bytes=100 * 1024,
+            request_count=10,
+            lighthouse=lighthouse,
+        )
+
+        # local=100, combined(45% lighthouse + 55% local)=73
+        self.assertEqual(scored["score"], 73.0)
 
 
 class CliParserTests(unittest.TestCase):

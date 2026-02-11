@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -35,6 +37,62 @@ SECURITY_HEADERS = [
 ]
 
 DEPRECATED_TAGS = {"marquee", "center", "font", "blink"}
+
+LIGHTHOUSE_CACHE: Dict[str, Dict[str, Any]] = {}
+LIGHTHOUSE_CACHE_LOCK = threading.Lock()
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
+def _lighthouse_runtime_profile() -> Dict[str, Any]:
+    running_in_vercel = bool(os.getenv("VERCEL"))
+    default_form_factor = "desktop" if running_in_vercel else "mobile"
+    default_throttling = "provided" if running_in_vercel else "simulate"
+
+    form_factor = os.getenv("WEB_ANALYZER_LIGHTHOUSE_FORM_FACTOR", default_form_factor).strip().lower()
+    throttling_method = os.getenv("WEB_ANALYZER_LIGHTHOUSE_THROTTLING_METHOD", default_throttling).strip().lower()
+
+    if form_factor not in {"mobile", "desktop"}:
+        form_factor = default_form_factor
+    if throttling_method not in {"simulate", "provided", "devtools"}:
+        throttling_method = default_throttling
+
+    return {
+        "form_factor": form_factor,
+        "throttling_method": throttling_method,
+        "max_wait_ms": _env_int("WEB_ANALYZER_LIGHTHOUSE_MAX_WAIT_MS", 30000, minimum=5000),
+        "cache_seconds": _env_int("WEB_ANALYZER_LIGHTHOUSE_CACHE_SECONDS", 1800, minimum=0),
+        "only_categories": "performance,accessibility,best-practices,seo",
+        "running_in_vercel": running_in_vercel,
+    }
+
+
+def _lighthouse_cache_key(url: str, profile: Dict[str, Any]) -> str:
+    return "|".join(
+        [
+            normalize_url(url),
+            profile["form_factor"],
+            profile["throttling_method"],
+            str(profile["max_wait_ms"]),
+            profile["only_categories"],
+        ]
+    )
 
 
 def normalize_url(url: str) -> str:
@@ -248,13 +306,29 @@ def _target_blank_without_rel_count(soup: BeautifulSoup) -> int:
 
 
 def _run_lighthouse(url: str, timeout: int = 120) -> Dict[str, Any]:
+    profile = _lighthouse_runtime_profile()
     lighthouse_bin = shutil.which("lighthouse")
     if not lighthouse_bin:
         return {
             "available": False,
             "reason": "lighthouse command not found",
             "scores": {},
+            "profile": profile,
+            "cached": False,
         }
+
+    cache_seconds = profile["cache_seconds"]
+    cache_key = _lighthouse_cache_key(url, profile)
+    if cache_seconds > 0:
+        with LIGHTHOUSE_CACHE_LOCK:
+            cached = LIGHTHOUSE_CACHE.get(cache_key)
+            if cached:
+                age = time.time() - cached["timestamp"]
+                if age <= cache_seconds:
+                    cached_payload = dict(cached["payload"])
+                    cached_payload["cached"] = True
+                    cached_payload["cache_age_s"] = round(age, 2)
+                    return cached_payload
 
     cmd = [
         lighthouse_bin,
@@ -263,15 +337,20 @@ def _run_lighthouse(url: str, timeout: int = 120) -> Dict[str, Any]:
         "--output=json",
         "--output-path=stdout",
         "--chrome-flags=--headless=new --no-sandbox",
-        "--only-categories=performance,accessibility,best-practices,seo",
+        f"--only-categories={profile['only_categories']}",
+        f"--form-factor={profile['form_factor']}",
+        f"--throttling-method={profile['throttling_method']}",
+        f"--max-wait-for-load={profile['max_wait_ms']}",
     ]
+    if profile["form_factor"] == "desktop":
+        cmd.append("--screenEmulation.disabled")
 
     try:
         process = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=max(timeout, 60),
+            timeout=max(timeout, 45),
             check=False,
         )
 
@@ -280,6 +359,8 @@ def _run_lighthouse(url: str, timeout: int = 120) -> Dict[str, Any]:
                 "available": False,
                 "reason": (process.stderr or process.stdout or "unknown lighthouse error").strip()[:300],
                 "scores": {},
+                "profile": profile,
+                "cached": False,
             }
 
         raw = json.loads(process.stdout)
@@ -301,23 +382,36 @@ def _run_lighthouse(url: str, timeout: int = 120) -> Dict[str, Any]:
             "speed_index_ms": audits.get("speed-index", {}).get("numericValue"),
         }
 
-        return {
+        payload = {
             "available": True,
             "reason": None,
             "scores": scores,
             "metrics": metrics,
+            "profile": profile,
+            "cached": False,
         }
+        if cache_seconds > 0:
+            with LIGHTHOUSE_CACHE_LOCK:
+                LIGHTHOUSE_CACHE[cache_key] = {
+                    "timestamp": time.time(),
+                    "payload": payload,
+                }
+        return payload
     except subprocess.TimeoutExpired:
         return {
             "available": False,
             "reason": "lighthouse timed out",
             "scores": {},
+            "profile": profile,
+            "cached": False,
         }
     except json.JSONDecodeError:
         return {
             "available": False,
             "reason": "lighthouse returned invalid json",
             "scores": {},
+            "profile": profile,
+            "cached": False,
         }
 
 
@@ -352,8 +446,8 @@ def _score_performance(response_time: float, content_size_bytes: int, request_co
 
     lighthouse_score = lighthouse.get("scores", {}).get("performance")
     if lighthouse_score is not None:
-        final_score = _clamp_score((lighthouse_score * 0.65) + (local_score * 0.35))
-        method = "combined(lighthouse+local)"
+        final_score = _clamp_score((lighthouse_score * 0.45) + (local_score * 0.55))
+        method = "combined(lighthouse+local, balanced)"
     else:
         final_score = local_score
         method = "local"
@@ -694,6 +788,8 @@ def run_full_audit(url: str, timeout: int = 10, use_lighthouse: bool = True) -> 
             "reason": "disabled",
             "scores": {},
             "metrics": {},
+            "profile": _lighthouse_runtime_profile(),
+            "cached": False,
         }
         if use_lighthouse:
             lighthouse = _run_lighthouse(fetched["final_url"], timeout=max(timeout * 10, 90))
@@ -829,6 +925,13 @@ def _format_full_report(result: Dict[str, Any]) -> str:
     lighthouse = result.get("lighthouse", {})
     if lighthouse.get("available"):
         lines.append("Lighthouse: available")
+        profile = lighthouse.get("profile", {})
+        if profile:
+            lines.append(
+                f"  profile: form_factor={profile.get('form_factor')} throttling={profile.get('throttling_method')}"
+            )
+        if lighthouse.get("cached"):
+            lines.append(f"  cache: hit ({lighthouse.get('cache_age_s', '?')}s old)")
     else:
         lines.append(f"Lighthouse: unavailable ({lighthouse.get('reason')})")
 

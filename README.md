@@ -105,6 +105,15 @@ export WEB_ANALYZER_RATE_LIMIT_REQUESTS="20"
 export WEB_ANALYZER_RATE_LIMIT_WINDOW_SECONDS="60"
 ```
 
+Tuning de Lighthouse (opcional, recomendado no Vercel para mais velocidade):
+
+```bash
+export WEB_ANALYZER_LIGHTHOUSE_FORM_FACTOR="desktop"          # mobile|desktop
+export WEB_ANALYZER_LIGHTHOUSE_THROTTLING_METHOD="provided"   # simulate|provided|devtools
+export WEB_ANALYZER_LIGHTHOUSE_MAX_WAIT_MS="30000"
+export WEB_ANALYZER_LIGHTHOUSE_CACHE_SECONDS="1800"
+```
+
 Exemplo API com `curl`:
 
 ```bash
@@ -161,6 +170,10 @@ No Vercel, configure as variaveis de ambiente:
 - `WEB_ANALYZER_API_KEY` (obrigatoria)
 - `WEB_ANALYZER_RATE_LIMIT_REQUESTS` (opcional)
 - `WEB_ANALYZER_RATE_LIMIT_WINDOW_SECONDS` (opcional)
+- `WEB_ANALYZER_LIGHTHOUSE_FORM_FACTOR` (opcional)
+- `WEB_ANALYZER_LIGHTHOUSE_THROTTLING_METHOD` (opcional)
+- `WEB_ANALYZER_LIGHTHOUSE_MAX_WAIT_MS` (opcional)
+- `WEB_ANALYZER_LIGHTHOUSE_CACHE_SECONDS` (opcional)
 
 ## Seguranca da API
 

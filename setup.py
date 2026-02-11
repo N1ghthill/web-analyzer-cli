@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="web-analyzer-cli",
-    version="2.3.0",
+    version="2.3.1",
     author="Irving Ruas",
     author_email="irving@ruas.dev.br",
     description="CLI + Web API para auditoria completa de qualidade de websites",
