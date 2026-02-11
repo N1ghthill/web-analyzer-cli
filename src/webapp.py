@@ -2,19 +2,221 @@
 
 from __future__ import annotations
 
+import os
+import queue
+import threading
 import time
-from typing import Any, Dict, Literal
+import uuid
+from collections import defaultdict, deque
+from datetime import datetime, timezone
+from typing import Any, Deque, Dict, Literal, Set, Tuple
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from .analyzer import run_basic_analysis, run_full_audit
 from .url_safety import validate_public_url
 
 APP_TITLE = "Web Analyzer API"
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
+
+
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _int_env(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if value < minimum:
+        return minimum
+    return value
+
+
+def _load_api_keys() -> Set[str]:
+    values = []
+    single = os.getenv("WEB_ANALYZER_API_KEY", "")
+    multi = os.getenv("WEB_ANALYZER_API_KEYS", "")
+    if single:
+        values.extend(single.split(","))
+    if multi:
+        values.extend(multi.split(","))
+    return {item.strip() for item in values if item.strip()}
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "").strip()
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+class FixedWindowRateLimiter:
+    """In-memory fixed-window limiter (per instance)."""
+
+    def __init__(self) -> None:
+        self._hits: Dict[str, Deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def allow(self, identity: str, max_requests: int, window_seconds: int) -> Tuple[bool, int]:
+        now = time.time()
+        cutoff = now - window_seconds
+
+        with self._lock:
+            bucket = self._hits[identity]
+            while bucket and bucket[0] <= cutoff:
+                bucket.popleft()
+
+            if len(bucket) >= max_requests:
+                retry_after = max(1, int(window_seconds - (now - bucket[0])))
+                return False, retry_after
+
+            bucket.append(now)
+            return True, 0
+
+    def clear(self) -> None:
+        with self._lock:
+            self._hits.clear()
+
+
+RATE_LIMITER = FixedWindowRateLimiter()
+
+JOB_QUEUE: "queue.Queue[str]" = queue.Queue()
+JOBS: Dict[str, Dict[str, Any]] = {}
+JOBS_LOCK = threading.Lock()
+WORKER_STARTED = False
+WORKER_LOCK = threading.Lock()
+
+
+def _ensure_worker_started() -> None:
+    global WORKER_STARTED
+    with WORKER_LOCK:
+        if WORKER_STARTED:
+            return
+
+        thread = threading.Thread(target=_job_worker, name="web-analyzer-worker", daemon=True)
+        thread.start()
+        WORKER_STARTED = True
+
+
+def _job_worker() -> None:
+    while True:
+        job_id = JOB_QUEUE.get()
+        try:
+            with JOBS_LOCK:
+                job = JOBS.get(job_id)
+                if not job:
+                    continue
+                job["status"] = "running"
+                job["updated_at"] = _utcnow()
+
+            payload = job["request"]
+            result = run_full_audit(
+                payload["url"],
+                timeout=payload["timeout"],
+                use_lighthouse=payload["use_lighthouse"],
+            )
+
+            with JOBS_LOCK:
+                if result.get("error"):
+                    job["status"] = "failed"
+                    job["error"] = result["error"]
+                else:
+                    job["status"] = "completed"
+                    job["result"] = result
+                job["updated_at"] = _utcnow()
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            with JOBS_LOCK:
+                job = JOBS.get(job_id)
+                if job:
+                    job["status"] = "failed"
+                    job["error"] = str(exc)
+                    job["updated_at"] = _utcnow()
+        finally:
+            JOB_QUEUE.task_done()
+
+
+def _queue_heavy_job(url: str, timeout: int, use_lighthouse: bool, requested_by: str) -> Dict[str, Any]:
+    _ensure_worker_started()
+
+    job_id = uuid.uuid4().hex
+    now = _utcnow()
+
+    job = {
+        "id": job_id,
+        "status": "queued",
+        "created_at": now,
+        "updated_at": now,
+        "requested_by": requested_by,
+        "request": {
+            "url": url,
+            "mode": "full",
+            "timeout": timeout,
+            "use_lighthouse": use_lighthouse,
+        },
+        "result": None,
+        "error": None,
+    }
+
+    with JOBS_LOCK:
+        JOBS[job_id] = job
+
+    JOB_QUEUE.put(job_id)
+
+    return {
+        "job_id": job_id,
+        "status_url": f"/api/jobs/{job_id}",
+    }
+
+
+def _require_api_key(request: Request) -> str:
+    valid_keys = _load_api_keys()
+    if not valid_keys:
+        raise HTTPException(
+            status_code=503,
+            detail="Server misconfigured: set WEB_ANALYZER_API_KEY or WEB_ANALYZER_API_KEYS",
+        )
+
+    provided = request.headers.get("x-api-key", "").strip()
+    if not provided:
+        raise HTTPException(status_code=401, detail="Missing x-api-key header")
+
+    if provided not in valid_keys:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    return provided
+
+
+def _apply_rate_limit(request: Request, api_key: str) -> None:
+    max_requests = _int_env("WEB_ANALYZER_RATE_LIMIT_REQUESTS", 20, minimum=1)
+    window_seconds = _int_env("WEB_ANALYZER_RATE_LIMIT_WINDOW_SECONDS", 60, minimum=1)
+
+    identity = f"{api_key}:{_client_ip(request)}"
+    allowed, retry_after = RATE_LIMITER.allow(identity, max_requests=max_requests, window_seconds=window_seconds)
+
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Retry in {retry_after}s",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+def reset_runtime_state() -> None:
+    """Test helper to clear in-memory runtime state."""
+    RATE_LIMITER.clear()
+    with JOBS_LOCK:
+        JOBS.clear()
+
 
 INDEX_HTML = """
 <!doctype html>
@@ -48,9 +250,6 @@ INDEX_HTML = """
       margin: 0 auto;
       padding: 28px 18px 48px;
     }
-    .hero {
-      margin-bottom: 22px;
-    }
     .hero h1 {
       margin: 0 0 8px;
       font-size: 30px;
@@ -58,7 +257,7 @@ INDEX_HTML = """
       letter-spacing: 0.3px;
     }
     .hero p {
-      margin: 0;
+      margin: 0 0 22px;
       color: var(--muted);
       font-size: 15px;
     }
@@ -127,9 +326,6 @@ INDEX_HTML = """
     button:disabled {
       opacity: 0.65;
       cursor: wait;
-    }
-    button:hover:not(:disabled) {
-      transform: translateY(-1px);
     }
     .status {
       min-height: 22px;
@@ -200,16 +396,23 @@ INDEX_HTML = """
   <main class="wrap">
     <section class="hero">
       <h1>Web Analyzer</h1>
-      <p>Run quick quality audits for performance, security, SEO and accessibility.</p>
+      <p>API-protected quality audits with rate-limit and async queue for heavy Lighthouse runs.</p>
     </section>
 
     <section class="panel">
       <form id="analyze-form">
         <div class="row two">
           <div>
+            <label for="api_key">API key (x-api-key)</label>
+            <input id="api_key" name="api_key" type="text" placeholder="Your API key" required />
+          </div>
+          <div>
             <label for="url">Target URL</label>
             <input id="url" name="url" type="text" placeholder="https://example.com" required />
           </div>
+        </div>
+
+        <div class="row three">
           <div>
             <label for="mode">Mode</label>
             <select id="mode" name="mode">
@@ -217,22 +420,21 @@ INDEX_HTML = """
               <option value="basic">Basic check</option>
             </select>
           </div>
-        </div>
-
-        <div class="row three">
           <div>
             <label for="timeout">Timeout (seconds)</label>
             <input id="timeout" name="timeout" type="number" min="2" max="60" value="10" />
           </div>
           <div class="check">
             <input id="use_lighthouse" name="use_lighthouse" type="checkbox" />
-            <label for="use_lighthouse" style="margin:0">Try Lighthouse (if available)</label>
-          </div>
-          <div style="display:flex;align-items:end;justify-content:flex-end">
-            <button id="submit-btn" type="submit">Analyze</button>
+            <label for="use_lighthouse" style="margin:0">Use Lighthouse (queued)</label>
           </div>
         </div>
+
+        <div style="display:flex;justify-content:flex-end">
+          <button id="submit-btn" type="submit">Analyze</button>
+        </div>
       </form>
+
       <div id="status" class="status"></div>
 
       <section id="result" class="result">
@@ -288,8 +490,43 @@ INDEX_HTML = """
       resultEl.style.display = 'block';
     }
 
+    async function pollJob(statusUrl, apiKey) {
+      const maxAttempts = 120;
+
+      for (let i = 1; i <= maxAttempts; i += 1) {
+        statusEl.textContent = `Queued job. Polling (${i}/${maxAttempts})...`;
+
+        const response = await fetch(statusUrl, {
+          method: 'GET',
+          headers: {
+            'x-api-key': apiKey,
+          },
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || 'Job status failed');
+        }
+
+        const job = data.job;
+        if (job.status === 'completed') {
+          return job.result;
+        }
+
+        if (job.status === 'failed') {
+          throw new Error(job.error || 'Background job failed');
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+
+      throw new Error('Timed out while waiting for queued job');
+    }
+
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
+
+      const apiKey = document.getElementById('api_key').value.trim();
       const payload = {
         url: document.getElementById('url').value,
         mode: document.getElementById('mode').value,
@@ -303,13 +540,23 @@ INDEX_HTML = """
       try {
         const response = await fetch('/api/analyze', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+          },
           body: JSON.stringify(payload),
         });
 
         const data = await response.json();
         if (!response.ok) {
           throw new Error(data.detail || 'Request failed');
+        }
+
+        if (data.queued) {
+          const result = await pollJob(data.status_url, apiKey);
+          renderResult(result, payload.mode);
+          statusEl.textContent = `Queued job completed (${data.job_id})`;
+          return;
         }
 
         renderResult(data.result, payload.mode);
@@ -333,10 +580,24 @@ class AnalyzeRequest(BaseModel):
     use_lighthouse: bool = Field(default=False)
 
 
-class AnalyzeResponse(BaseModel):
+class AnalyzeSyncResponse(BaseModel):
     ok: bool
+    queued: bool = False
     elapsed_ms: int
     result: Dict[str, Any]
+
+
+class AnalyzeQueuedResponse(BaseModel):
+    ok: bool
+    queued: bool = True
+    job_id: str
+    status_url: str
+    message: str
+
+
+class JobStatusResponse(BaseModel):
+    ok: bool
+    job: Dict[str, Any]
 
 
 app = FastAPI(title=APP_TITLE, version=APP_VERSION)
@@ -356,18 +617,55 @@ def index() -> str:
 
 
 @app.get("/api/health")
-def health() -> Dict[str, str]:
-    return {"status": "ok"}
+def health() -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "version": APP_VERSION,
+        "auth_configured": bool(_load_api_keys()),
+        "queue_size": JOB_QUEUE.qsize(),
+        "rate_limit": {
+            "requests": _int_env("WEB_ANALYZER_RATE_LIMIT_REQUESTS", 20, minimum=1),
+            "window_seconds": _int_env("WEB_ANALYZER_RATE_LIMIT_WINDOW_SECONDS", 60, minimum=1),
+        },
+    }
 
 
-@app.post("/api/analyze", response_model=AnalyzeResponse)
-def analyze(payload: AnalyzeRequest) -> AnalyzeResponse:
+@app.post(
+    "/api/analyze",
+    responses={
+        200: {"model": AnalyzeSyncResponse},
+        202: {"model": AnalyzeQueuedResponse},
+    },
+)
+def analyze(payload: AnalyzeRequest, request: Request):
     started = time.time()
+
+    api_key = _require_api_key(request)
+    _apply_rate_limit(request, api_key)
 
     try:
         safe_url = validate_public_url(payload.url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Heavy Lighthouse runs go through async queue.
+    if payload.mode == "full" and payload.use_lighthouse:
+        queued = _queue_heavy_job(
+            url=safe_url,
+            timeout=payload.timeout,
+            use_lighthouse=True,
+            requested_by=f"{api_key}:{_client_ip(request)}",
+        )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "ok": True,
+                "queued": True,
+                "job_id": queued["job_id"],
+                "status_url": queued["status_url"],
+                "message": "Heavy analysis queued. Poll status_url for completion.",
+            },
+        )
 
     if payload.mode == "basic":
         result = run_basic_analysis(safe_url, timeout=payload.timeout)
@@ -375,7 +673,7 @@ def analyze(payload: AnalyzeRequest) -> AnalyzeResponse:
         result = run_full_audit(
             safe_url,
             timeout=payload.timeout,
-            use_lighthouse=payload.use_lighthouse,
+            use_lighthouse=False,
         )
 
     if result.get("error"):
@@ -387,4 +685,18 @@ def analyze(payload: AnalyzeRequest) -> AnalyzeResponse:
         raise HTTPException(status_code=500, detail=f"Analyzer error: {error}")
 
     elapsed_ms = int((time.time() - started) * 1000)
-    return AnalyzeResponse(ok=True, elapsed_ms=elapsed_ms, result=result)
+    return AnalyzeSyncResponse(ok=True, queued=False, elapsed_ms=elapsed_ms, result=result)
+
+
+@app.get("/api/jobs/{job_id}", response_model=JobStatusResponse)
+def get_job_status(job_id: str, request: Request) -> JobStatusResponse:
+    api_key = _require_api_key(request)
+    _apply_rate_limit(request, api_key)
+
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        data = dict(job)
+
+    return JobStatusResponse(ok=True, job=data)

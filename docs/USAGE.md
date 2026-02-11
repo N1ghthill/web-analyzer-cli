@@ -64,7 +64,15 @@ github.com/N1ghthill
 Subir servidor:
 
 ```bash
+export WEB_ANALYZER_API_KEY="troque-por-uma-chave-forte"
 uvicorn app:app --reload
+```
+
+Rate limit (opcional):
+
+```bash
+export WEB_ANALYZER_RATE_LIMIT_REQUESTS="20"
+export WEB_ANALYZER_RATE_LIMIT_WINDOW_SECONDS="60"
 ```
 
 Healthcheck:
@@ -77,6 +85,7 @@ Analise:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/analyze \
+  -H 'x-api-key: troque-por-uma-chave-forte' \
   -H 'Content-Type: application/json' \
   -d '{
     "url": "https://example.com",
@@ -86,12 +95,37 @@ curl -X POST http://127.0.0.1:8000/api/analyze \
   }'
 ```
 
+Analise pesada em fila (Lighthouse):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/analyze \
+  -H 'x-api-key: troque-por-uma-chave-forte' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "url": "https://example.com",
+    "mode": "full",
+    "timeout": 20,
+    "use_lighthouse": true
+  }'
+```
+
+Consultar status de job:
+
+```bash
+curl -H 'x-api-key: troque-por-uma-chave-forte' \
+  http://127.0.0.1:8000/api/jobs/<job_id>
+```
+
 Campos do payload:
 
 - `url` (string)
 - `mode` (`basic` ou `full`)
 - `timeout` (2-60)
 - `use_lighthouse` (boolean)
+
+Headers obrigatorios:
+
+- `x-api-key`
 
 ## WebApp local
 

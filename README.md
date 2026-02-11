@@ -90,11 +90,26 @@ Endpoints principais:
 
 - `GET /api/health`
 - `POST /api/analyze`
+- `GET /api/jobs/{job_id}` (para jobs em fila)
+
+Configuracao obrigatoria para uso da API:
+
+```bash
+export WEB_ANALYZER_API_KEY="troque-por-uma-chave-forte"
+```
+
+Rate limit (opcional):
+
+```bash
+export WEB_ANALYZER_RATE_LIMIT_REQUESTS="20"
+export WEB_ANALYZER_RATE_LIMIT_WINDOW_SECONDS="60"
+```
 
 Exemplo API com `curl`:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/analyze \
+  -H 'x-api-key: troque-por-uma-chave-forte' \
   -H 'Content-Type: application/json' \
   -d '{
     "url": "https://example.com",
@@ -102,6 +117,27 @@ curl -X POST http://127.0.0.1:8000/api/analyze \
     "timeout": 10,
     "use_lighthouse": false
   }'
+```
+
+Exemplo de request pesada (Lighthouse em fila):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/analyze \
+  -H 'x-api-key: troque-por-uma-chave-forte' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "url": "https://example.com",
+    "mode": "full",
+    "timeout": 20,
+    "use_lighthouse": true
+  }'
+```
+
+Se a resposta vier com `queued: true`, consulte:
+
+```bash
+curl -H 'x-api-key: troque-por-uma-chave-forte' \
+  http://127.0.0.1:8000/api/jobs/<job_id>
 ```
 
 ## Deploy no Vercel
@@ -118,6 +154,13 @@ Depois do deploy:
 - `https://seu-projeto.vercel.app/` (WebApp)
 - `https://seu-projeto.vercel.app/api/health`
 - `https://seu-projeto.vercel.app/api/analyze`
+- `https://seu-projeto.vercel.app/api/jobs/{job_id}`
+
+No Vercel, configure as variaveis de ambiente:
+
+- `WEB_ANALYZER_API_KEY` (obrigatoria)
+- `WEB_ANALYZER_RATE_LIMIT_REQUESTS` (opcional)
+- `WEB_ANALYZER_RATE_LIMIT_WINDOW_SECONDS` (opcional)
 
 ## Seguranca da API
 
