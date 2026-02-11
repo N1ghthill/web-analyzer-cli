@@ -1,13 +1,16 @@
-# Web Analyzer CLI
+# Web Analyzer
 
-CLI em Python para auditoria de qualidade de websites.
+Ferramenta em Python com dois modos de uso:
+
+- CLI (`wa`, `waf`, `wab`, `web-analyzer`)
+- WebApp + API (`FastAPI`, pronta para Vercel)
 
 ## O que a ferramenta faz
 
 - `modo basico`: status HTTP, tempo de resposta, titulo, links, imagens e viewport.
-- `modo full` (`--full`): auditoria com nota de `0-100` por criterio e nota geral ponderada.
+- `modo full`: auditoria com nota de `0-100` por criterio e nota geral ponderada.
 
-Criterios do modo full:
+Pesos da nota geral (modo full):
 - Performance (`25%`)
 - Seguranca (`30%`)
 - SEO (`20%`)
@@ -18,12 +21,12 @@ Criterios do modo full:
 
 - Funciona em Linux, macOS e Windows (Python).
 - Integracao com Lighthouse e opcional.
-- Sem Lighthouse: usa somente metricas locais (HTTP/HTML/headers).
+- Sem Lighthouse: usa metricas locais (HTTP/HTML/headers).
 - Com Lighthouse: combina score local + score browser-level.
 
 ## Instalacao
 
-Opcao 1 (recomendada, instala comando global com isolamento):
+Opcao 1 (recomendada):
 
 ```bash
 pipx install git+https://github.com/N1ghthill/web-analyzer-cli.git
@@ -35,23 +38,23 @@ Opcao 2 (local no repositorio):
 git clone https://github.com/N1ghthill/web-analyzer-cli.git
 cd web-analyzer-cli
 python -m venv .venv
-source .venv/bin/activate  # no Windows: .venv\Scripts\activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
-Opcional para auditoria mais completa de performance/SEO/acessibilidade:
+Opcional para auditoria mais completa:
 
 ```bash
 npm install -g lighthouse
 ```
 
-## Uso rapido
+## CLI rapido
 
 ```bash
-# Comandos curtos (apos instalar)
+# Basico
 wa https://example.com
 
-# Full audit com score por criterio + score geral
+# Full audit
 waf https://example.com
 
 # Full audit em JSON
@@ -60,7 +63,7 @@ waf https://example.com -j
 # Salvar relatorio
 waf https://example.com -j -r ./report.json
 
-# Ler varias URLs de um arquivo
+# Lote por arquivo
 wab urls.txt -j -r ./reports
 ```
 
@@ -70,6 +73,61 @@ Tambem funciona com comando completo:
 web-analyzer https://example.com --full --format json --report ./report.json
 ```
 
+## WebApp + API local
+
+Suba o servidor local:
+
+```bash
+uvicorn app:app --reload
+```
+
+Acesse no navegador:
+
+- `http://127.0.0.1:8000/` (WebApp)
+- `http://127.0.0.1:8000/docs` (Swagger)
+
+Endpoints principais:
+
+- `GET /api/health`
+- `POST /api/analyze`
+
+Exemplo API com `curl`:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/analyze \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "url": "https://example.com",
+    "mode": "full",
+    "timeout": 10,
+    "use_lighthouse": false
+  }'
+```
+
+## Deploy no Vercel
+
+Este repo ja inclui `app.py` como entrypoint ASGI.
+
+```bash
+npm i -g vercel
+vercel
+```
+
+Depois do deploy:
+
+- `https://seu-projeto.vercel.app/` (WebApp)
+- `https://seu-projeto.vercel.app/api/health`
+- `https://seu-projeto.vercel.app/api/analyze`
+
+## Seguranca da API
+
+A API aplica validacoes para reduzir SSRF:
+
+- bloqueia `localhost`, `.local`, IPs privados/loopback/link-local
+- bloqueia hosts que resolvem DNS para IP interno
+- permite apenas `http` e `https`
+- bloqueia URL com credenciais embutidas
+
 ## Formato de saida (modo full)
 
 - `overall_score`
@@ -78,13 +136,7 @@ web-analyzer https://example.com --full --format json --report ./report.json
 - `criteria.seo.score`
 - `criteria.accessibility.score`
 - `criteria.best_practices.score`
-- `lighthouse.available` (true/false)
-
-## Rodar sem instalar
-
-```bash
-python main.py https://example.com --full
-```
+- `lighthouse.available`
 
 ## Documentacao
 

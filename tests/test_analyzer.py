@@ -1,4 +1,6 @@
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from unittest.mock import patch
 
 from src import analyzer
@@ -137,7 +139,8 @@ class CliParserTests(unittest.TestCase):
         )
 
     def test_main_batch_wrapper_requires_file(self):
-        rc = main_batch([])
+        with redirect_stdout(StringIO()):
+            rc = main_batch([])
         self.assertEqual(rc, 1)
 
 

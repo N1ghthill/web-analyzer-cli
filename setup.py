@@ -5,10 +5,10 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="web-analyzer-cli",
-    version="2.1.0",
+    version="2.2.0",
     author="Irving Ruas",
     author_email="irving@ruas.dev.br",
-    description="CLI tool para auditoria completa de qualidade de websites",
+    description="CLI + Web API para auditoria completa de qualidade de websites",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/N1ghthill/web-analyzer-cli",
@@ -22,6 +22,9 @@ setup(
     install_requires=[
         "requests>=2.25.1",
         "beautifulsoup4>=4.9.3",
+        "fastapi>=0.115.0",
+        "uvicorn>=0.30.0",
+        "httpx>=0.27.0",
     ],
     entry_points={
         "console_scripts": [
