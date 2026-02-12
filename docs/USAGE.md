@@ -33,12 +33,6 @@ waf https://example.com
 waf https://example.com -j
 ```
 
-### Sem Lighthouse
-
-```bash
-waf https://example.com -n
-```
-
 ### Timeout
 
 ```bash
@@ -75,15 +69,6 @@ export WEB_ANALYZER_RATE_LIMIT_REQUESTS="20"
 export WEB_ANALYZER_RATE_LIMIT_WINDOW_SECONDS="60"
 ```
 
-Tuning de Lighthouse (opcional):
-
-```bash
-export WEB_ANALYZER_LIGHTHOUSE_FORM_FACTOR="desktop"
-export WEB_ANALYZER_LIGHTHOUSE_THROTTLING_METHOD="provided"
-export WEB_ANALYZER_LIGHTHOUSE_MAX_WAIT_MS="30000"
-export WEB_ANALYZER_LIGHTHOUSE_CACHE_SECONDS="1800"
-```
-
 Healthcheck:
 
 ```bash
@@ -99,47 +84,15 @@ curl -X POST http://127.0.0.1:8000/api/analyze \
   -d '{
     "url": "https://example.com",
     "mode": "full",
-    "timeout": 10,
-    "use_lighthouse": false
+    "timeout": 10
   }'
 ```
-
-Analise pesada em fila (Lighthouse):
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/analyze \
-  -H 'x-api-key: troque-por-uma-chave-forte' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "url": "https://example.com",
-    "mode": "full",
-    "timeout": 20,
-    "use_lighthouse": true
-  }'
-```
-
-Consultar status de job:
-
-```bash
-curl -H 'x-api-key: troque-por-uma-chave-forte' \
-  http://127.0.0.1:8000/api/jobs/<job_id>
-```
-
-Controle de fila:
-
-```bash
-export WEB_ANALYZER_ENABLE_BACKGROUND_QUEUE="1"
-```
-
-- Em Vercel, por padrao a fila em memoria fica desativada.
-- Quando a fila estiver desativada, `use_lighthouse=true` roda de forma sincrona.
 
 Campos do payload:
 
 - `url` (string)
 - `mode` (`basic` ou `full`)
 - `timeout` (2-60)
-- `use_lighthouse` (boolean)
 
 Headers obrigatorios:
 
@@ -166,9 +119,3 @@ A nota final e ponderada:
 - SEO: 20%
 - Acessibilidade: 15%
 - Boas praticas: 10%
-
-## Observacoes
-
-- Lighthouse e opcional.
-- Sem Lighthouse, as notas continuam sendo calculadas com checks locais.
-- Com Lighthouse, as notas ficam mais proximas de um teste de navegador real.

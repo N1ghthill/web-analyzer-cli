@@ -23,12 +23,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-F", "--full", action="store_true", help="Run complete quality audit")
     parser.add_argument("-t", "--timeout", type=int, default=10, help="HTTP timeout in seconds")
     parser.add_argument(
-        "-n",
-        "--no-lighthouse",
-        action="store_true",
-        help="Disable optional lighthouse integration",
-    )
-    parser.add_argument(
         "-o",
         "--format",
         default="text",
@@ -60,14 +54,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     output_format = "json" if args.json else args.format
-    use_lighthouse = not args.no_lighthouse
 
     if args.arquivo:
         modo_arquivo(
             args.arquivo,
             full=args.full,
             timeout=args.timeout,
-            use_lighthouse=use_lighthouse,
             output_format=output_format,
             report=args.report,
         )
@@ -79,7 +71,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             args.url,
             full=args.full,
             timeout=args.timeout,
-            use_lighthouse=use_lighthouse,
             output_format=output_format,
             report_file=report_file,
         )
@@ -88,7 +79,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     modo_interativo(
         full=args.full,
         timeout=args.timeout,
-        use_lighthouse=use_lighthouse,
         output_format=output_format,
         report=args.report,
     )

@@ -20,9 +20,7 @@ Pesos da nota geral (modo full):
 ## Compatibilidade
 
 - Funciona em Linux, macOS e Windows (Python).
-- Integracao com Lighthouse e opcional.
-- Sem Lighthouse: usa metricas locais (HTTP/HTML/headers).
-- Com Lighthouse: combina score local + score browser-level.
+- Auditoria baseada em checks locais (sem dependencia de Lighthouse).
 
 ## Instalacao
 
@@ -40,12 +38,6 @@ cd web-analyzer-cli
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .
-```
-
-Opcional para auditoria mais completa:
-
-```bash
-npm install -g lighthouse
 ```
 
 ## CLI rapido
@@ -78,7 +70,15 @@ web-analyzer https://example.com --full --format json --report ./report.json
 Suba o servidor local:
 
 ```bash
+export WEB_ANALYZER_API_KEY="troque-por-uma-chave-forte"
 uvicorn app:app --reload
+```
+
+Rate limit (opcional):
+
+```bash
+export WEB_ANALYZER_RATE_LIMIT_REQUESTS="20"
+export WEB_ANALYZER_RATE_LIMIT_WINDOW_SECONDS="60"
 ```
 
 Acesse no navegador:
@@ -90,29 +90,6 @@ Endpoints principais:
 
 - `GET /api/health`
 - `POST /api/analyze`
-- `GET /api/jobs/{job_id}` (para jobs em fila)
-
-Configuracao obrigatoria para uso da API:
-
-```bash
-export WEB_ANALYZER_API_KEY="troque-por-uma-chave-forte"
-```
-
-Rate limit (opcional):
-
-```bash
-export WEB_ANALYZER_RATE_LIMIT_REQUESTS="20"
-export WEB_ANALYZER_RATE_LIMIT_WINDOW_SECONDS="60"
-```
-
-Tuning de Lighthouse (opcional, recomendado no Vercel para mais velocidade):
-
-```bash
-export WEB_ANALYZER_LIGHTHOUSE_FORM_FACTOR="desktop"          # mobile|desktop
-export WEB_ANALYZER_LIGHTHOUSE_THROTTLING_METHOD="provided"   # simulate|provided|devtools
-export WEB_ANALYZER_LIGHTHOUSE_MAX_WAIT_MS="30000"
-export WEB_ANALYZER_LIGHTHOUSE_CACHE_SECONDS="1800"
-```
 
 Exemplo API com `curl`:
 
@@ -123,45 +100,13 @@ curl -X POST http://127.0.0.1:8000/api/analyze \
   -d '{
     "url": "https://example.com",
     "mode": "full",
-    "timeout": 10,
-    "use_lighthouse": false
+    "timeout": 10
   }'
-```
-
-Exemplo de request pesada (Lighthouse em fila):
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/analyze \
-  -H 'x-api-key: troque-por-uma-chave-forte' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "url": "https://example.com",
-    "mode": "full",
-    "timeout": 20,
-    "use_lighthouse": true
-  }'
-```
-
-Se a resposta vier com `queued: true`, consulte:
-
-```bash
-curl -H 'x-api-key: troque-por-uma-chave-forte' \
-  http://127.0.0.1:8000/api/jobs/<job_id>
-```
-
-Observacao de runtime:
-
-- Em Vercel, a fila em memoria fica desabilitada por padrao para evitar jobs presos.
-- Nesse caso, `use_lighthouse=true` roda de forma sincrona.
-- Para forcar fila em ambientes persistentes, configure:
-
-```bash
-export WEB_ANALYZER_ENABLE_BACKGROUND_QUEUE="1"
 ```
 
 ## Deploy no Vercel
 
-Este repo ja inclui `app.py` como entrypoint ASGI.
+Este repo inclui `app.py` como entrypoint ASGI.
 
 ```bash
 npm i -g vercel
@@ -173,18 +118,12 @@ Depois do deploy:
 - `https://seu-projeto.vercel.app/` (WebApp)
 - `https://seu-projeto.vercel.app/api/health`
 - `https://seu-projeto.vercel.app/api/analyze`
-- `https://seu-projeto.vercel.app/api/jobs/{job_id}`
 
 No Vercel, configure as variaveis de ambiente:
 
 - `WEB_ANALYZER_API_KEY` (obrigatoria)
 - `WEB_ANALYZER_RATE_LIMIT_REQUESTS` (opcional)
 - `WEB_ANALYZER_RATE_LIMIT_WINDOW_SECONDS` (opcional)
-- `WEB_ANALYZER_LIGHTHOUSE_FORM_FACTOR` (opcional)
-- `WEB_ANALYZER_LIGHTHOUSE_THROTTLING_METHOD` (opcional)
-- `WEB_ANALYZER_LIGHTHOUSE_MAX_WAIT_MS` (opcional)
-- `WEB_ANALYZER_LIGHTHOUSE_CACHE_SECONDS` (opcional)
-- `WEB_ANALYZER_ENABLE_BACKGROUND_QUEUE` (opcional)
 
 ## Seguranca da API
 
@@ -203,7 +142,6 @@ A API aplica validacoes para reduzir SSRF:
 - `criteria.seo.score`
 - `criteria.accessibility.score`
 - `criteria.best_practices.score`
-- `lighthouse.available`
 
 ## Documentacao
 

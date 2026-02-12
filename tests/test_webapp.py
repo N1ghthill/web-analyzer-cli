@@ -5,7 +5,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from src.url_safety import validate_public_url
-from src.webapp import JOBS, JOBS_LOCK, app, reset_runtime_state
+from src.webapp import app, reset_runtime_state
 
 
 class UrlSafetyTests(unittest.TestCase):
@@ -51,7 +51,6 @@ class WebApiTests(unittest.TestCase):
                     "url": "https://example.com",
                     "mode": "full",
                     "timeout": 10,
-                    "use_lighthouse": False,
                 },
             )
 
@@ -67,7 +66,6 @@ class WebApiTests(unittest.TestCase):
                     "url": "https://example.com",
                     "mode": "full",
                     "timeout": 10,
-                    "use_lighthouse": False,
                 },
             )
 
@@ -107,82 +105,15 @@ class WebApiTests(unittest.TestCase):
                     "url": "https://example.com",
                     "mode": "full",
                     "timeout": 10,
-                    "use_lighthouse": False,
                 },
             )
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertTrue(payload["ok"])
-        self.assertFalse(payload["queued"])
         self.assertEqual(payload["result"]["overall_score"], 88.5)
         mock_validate.assert_called_once()
-        mock_full.assert_called_once()
-
-    @patch("src.webapp.validate_public_url")
-    @patch("src.webapp._queue_heavy_job")
-    @patch("src.webapp._background_queue_enabled", return_value=True)
-    def test_analyze_queues_heavy_lighthouse(self, _mock_queue_enabled, mock_enqueue, mock_validate):
-        mock_validate.return_value = "https://example.com"
-        mock_enqueue.return_value = {
-            "job_id": "job-123",
-            "status_url": "/api/jobs/job-123",
-        }
-
-        with patch.dict(os.environ, {"WEB_ANALYZER_API_KEY": "test-key"}, clear=False):
-            response = self.client.post(
-                "/api/analyze",
-                headers=self._headers(),
-                json={
-                    "url": "https://example.com",
-                    "mode": "full",
-                    "timeout": 10,
-                    "use_lighthouse": True,
-                },
-            )
-
-        self.assertEqual(response.status_code, 202)
-        payload = response.json()
-        self.assertTrue(payload["ok"])
-        self.assertTrue(payload["queued"])
-        self.assertEqual(payload["job_id"], "job-123")
-        mock_enqueue.assert_called_once()
-
-    @patch("src.webapp.validate_public_url")
-    @patch("src.webapp.run_full_audit")
-    @patch("src.webapp._background_queue_enabled", return_value=False)
-    def test_analyze_runs_sync_when_queue_disabled(self, _mock_queue_enabled, mock_full, mock_validate):
-        mock_validate.return_value = "https://example.com"
-        mock_full.return_value = {
-            "mode": "full",
-            "error": None,
-            "overall_score": 72.0,
-            "criteria": {
-                "performance": {"score": 70, "method": "local"},
-                "security": {"score": 74, "method": "local"},
-                "seo": {"score": 70, "method": "local"},
-                "accessibility": {"score": 75, "method": "local"},
-                "best_practices": {"score": 71, "method": "local"},
-            },
-        }
-
-        with patch.dict(os.environ, {"WEB_ANALYZER_API_KEY": "test-key"}, clear=False):
-            response = self.client.post(
-                "/api/analyze",
-                headers=self._headers(),
-                json={
-                    "url": "https://example.com",
-                    "mode": "full",
-                    "timeout": 10,
-                    "use_lighthouse": True,
-                },
-            )
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertTrue(payload["ok"])
-        self.assertFalse(payload["queued"])
-        mock_full.assert_called_once_with("https://example.com", timeout=10, use_lighthouse=True)
+        mock_full.assert_called_once_with("https://example.com", timeout=10)
 
     @patch("src.webapp.validate_public_url", side_effect=ValueError("blocked"))
     def test_analyze_rejects_bad_url(self, _mock_validate):
@@ -194,7 +125,6 @@ class WebApiTests(unittest.TestCase):
                     "url": "http://localhost",
                     "mode": "full",
                     "timeout": 10,
-                    "use_lighthouse": False,
                 },
             )
 
@@ -228,7 +158,6 @@ class WebApiTests(unittest.TestCase):
                     "url": "https://example.com",
                     "mode": "basic",
                     "timeout": 10,
-                    "use_lighthouse": False,
                 },
             )
             second = self.client.post(
@@ -238,45 +167,12 @@ class WebApiTests(unittest.TestCase):
                     "url": "https://example.com",
                     "mode": "basic",
                     "timeout": 10,
-                    "use_lighthouse": False,
                 },
             )
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 429)
         self.assertIn("Retry-After", second.headers)
-
-    def test_get_job_status(self):
-        with JOBS_LOCK:
-            JOBS["job-1"] = {
-                "id": "job-1",
-                "status": "completed",
-                "created_at": "2026-01-01T00:00:00Z",
-                "updated_at": "2026-01-01T00:00:10Z",
-                "requested_by": "test",
-                "request": {
-                    "url": "https://example.com",
-                    "mode": "full",
-                    "timeout": 10,
-                    "use_lighthouse": True,
-                },
-                "result": {"overall_score": 77},
-                "error": None,
-            }
-
-        with patch.dict(os.environ, {"WEB_ANALYZER_API_KEY": "test-key"}, clear=False):
-            response = self.client.get("/api/jobs/job-1", headers=self._headers())
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["job"]["id"], "job-1")
-
-    def test_get_job_status_not_found(self):
-        with patch.dict(os.environ, {"WEB_ANALYZER_API_KEY": "test-key"}, clear=False):
-            response = self.client.get("/api/jobs/missing", headers=self._headers())
-
-        self.assertEqual(response.status_code, 404)
 
 
 if __name__ == "__main__":

@@ -45,7 +45,6 @@ def _resolve_report_path(
 def modo_interativo(
     full: bool = False,
     timeout: int = 10,
-    use_lighthouse: bool = True,
     output_format: str = "text",
     report: Optional[str] = None,
 ):
@@ -73,7 +72,6 @@ def modo_interativo(
             url,
             full=full,
             timeout=timeout,
-            use_lighthouse=use_lighthouse,
             output_format=output_format,
             report_file=report_file,
         )
@@ -83,7 +81,6 @@ def modo_arquivo(
     arquivo: str,
     full: bool = False,
     timeout: int = 10,
-    use_lighthouse: bool = True,
     output_format: str = "text",
     report: Optional[str] = None,
 ):
@@ -100,7 +97,6 @@ def modo_arquivo(
                 url,
                 full=full,
                 timeout=timeout,
-                use_lighthouse=use_lighthouse,
                 output_format=output_format,
                 report_file=report_file,
             )
@@ -140,13 +136,9 @@ def mostrar_ajuda():
         "\n"
         "Flags:\n"
         "  -t, --timeout <seconds>      request timeout (default: 10)\n"
-        "  -n, --no-lighthouse          skip optional lighthouse integration\n"
         "  -o, --format text|json       output format (default: text)\n"
         "  -j, --json                   shortcut for --format json\n"
         "  -r, --report                 output file/folder for report(s)\n"
-        "\n"
-        "Tip: install lighthouse for stronger browser-level metrics:\n"
-        "  npm install -g lighthouse\n"
     )
 
 

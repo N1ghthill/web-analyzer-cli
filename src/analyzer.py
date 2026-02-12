@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
-import subprocess
-import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -37,62 +33,6 @@ SECURITY_HEADERS = [
 ]
 
 DEPRECATED_TAGS = {"marquee", "center", "font", "blink"}
-
-LIGHTHOUSE_CACHE: Dict[str, Dict[str, Any]] = {}
-LIGHTHOUSE_CACHE_LOCK = threading.Lock()
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name, "").strip().lower()
-    if not raw:
-        return default
-    return raw in {"1", "true", "yes", "on"}
-
-
-def _env_int(name: str, default: int, minimum: int = 1) -> int:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return max(minimum, value)
-
-
-def _lighthouse_runtime_profile() -> Dict[str, Any]:
-    running_in_vercel = bool(os.getenv("VERCEL"))
-    default_form_factor = "desktop" if running_in_vercel else "mobile"
-    default_throttling = "provided" if running_in_vercel else "simulate"
-
-    form_factor = os.getenv("WEB_ANALYZER_LIGHTHOUSE_FORM_FACTOR", default_form_factor).strip().lower()
-    throttling_method = os.getenv("WEB_ANALYZER_LIGHTHOUSE_THROTTLING_METHOD", default_throttling).strip().lower()
-
-    if form_factor not in {"mobile", "desktop"}:
-        form_factor = default_form_factor
-    if throttling_method not in {"simulate", "provided", "devtools"}:
-        throttling_method = default_throttling
-
-    return {
-        "form_factor": form_factor,
-        "throttling_method": throttling_method,
-        "max_wait_ms": _env_int("WEB_ANALYZER_LIGHTHOUSE_MAX_WAIT_MS", 30000, minimum=5000),
-        "cache_seconds": _env_int("WEB_ANALYZER_LIGHTHOUSE_CACHE_SECONDS", 1800, minimum=0),
-        "only_categories": "performance,accessibility,best-practices,seo",
-        "running_in_vercel": running_in_vercel,
-    }
-
-
-def _lighthouse_cache_key(url: str, profile: Dict[str, Any]) -> str:
-    return "|".join(
-        [
-            normalize_url(url),
-            profile["form_factor"],
-            profile["throttling_method"],
-            str(profile["max_wait_ms"]),
-            profile["only_categories"],
-        ]
-    )
 
 
 def normalize_url(url: str) -> str:
@@ -305,117 +245,7 @@ def _target_blank_without_rel_count(soup: BeautifulSoup) -> int:
     return count
 
 
-def _run_lighthouse(url: str, timeout: int = 120) -> Dict[str, Any]:
-    profile = _lighthouse_runtime_profile()
-    lighthouse_bin = shutil.which("lighthouse")
-    if not lighthouse_bin:
-        return {
-            "available": False,
-            "reason": "lighthouse command not found",
-            "scores": {},
-            "profile": profile,
-            "cached": False,
-        }
-
-    cache_seconds = profile["cache_seconds"]
-    cache_key = _lighthouse_cache_key(url, profile)
-    if cache_seconds > 0:
-        with LIGHTHOUSE_CACHE_LOCK:
-            cached = LIGHTHOUSE_CACHE.get(cache_key)
-            if cached:
-                age = time.time() - cached["timestamp"]
-                if age <= cache_seconds:
-                    cached_payload = dict(cached["payload"])
-                    cached_payload["cached"] = True
-                    cached_payload["cache_age_s"] = round(age, 2)
-                    return cached_payload
-
-    cmd = [
-        lighthouse_bin,
-        url,
-        "--quiet",
-        "--output=json",
-        "--output-path=stdout",
-        "--chrome-flags=--headless=new --no-sandbox",
-        f"--only-categories={profile['only_categories']}",
-        f"--form-factor={profile['form_factor']}",
-        f"--throttling-method={profile['throttling_method']}",
-        f"--max-wait-for-load={profile['max_wait_ms']}",
-    ]
-    if profile["form_factor"] == "desktop":
-        cmd.append("--screenEmulation.disabled")
-
-    try:
-        process = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=max(timeout, 45),
-            check=False,
-        )
-
-        if process.returncode != 0:
-            return {
-                "available": False,
-                "reason": (process.stderr or process.stdout or "unknown lighthouse error").strip()[:300],
-                "scores": {},
-                "profile": profile,
-                "cached": False,
-            }
-
-        raw = json.loads(process.stdout)
-        categories = raw.get("categories", {})
-        audits = raw.get("audits", {})
-
-        scores = {}
-        for key in ["performance", "accessibility", "best-practices", "seo"]:
-            category = categories.get(key, {})
-            value = category.get("score")
-            if value is None:
-                continue
-            scores[key.replace("-", "_")] = _clamp_score(value * 100)
-
-        metrics = {
-            "first_contentful_paint_ms": audits.get("first-contentful-paint", {}).get("numericValue"),
-            "largest_contentful_paint_ms": audits.get("largest-contentful-paint", {}).get("numericValue"),
-            "total_blocking_time_ms": audits.get("total-blocking-time", {}).get("numericValue"),
-            "speed_index_ms": audits.get("speed-index", {}).get("numericValue"),
-        }
-
-        payload = {
-            "available": True,
-            "reason": None,
-            "scores": scores,
-            "metrics": metrics,
-            "profile": profile,
-            "cached": False,
-        }
-        if cache_seconds > 0:
-            with LIGHTHOUSE_CACHE_LOCK:
-                LIGHTHOUSE_CACHE[cache_key] = {
-                    "timestamp": time.time(),
-                    "payload": payload,
-                }
-        return payload
-    except subprocess.TimeoutExpired:
-        return {
-            "available": False,
-            "reason": "lighthouse timed out",
-            "scores": {},
-            "profile": profile,
-            "cached": False,
-        }
-    except json.JSONDecodeError:
-        return {
-            "available": False,
-            "reason": "lighthouse returned invalid json",
-            "scores": {},
-            "profile": profile,
-            "cached": False,
-        }
-
-
-def _score_performance(response_time: float, content_size_bytes: int, request_count: int, lighthouse: Dict[str, Any]) -> Dict[str, Any]:
+def _score_performance(response_time: float, content_size_bytes: int, request_count: int) -> Dict[str, Any]:
     response_score = _score_by_threshold(response_time, [
         (0.4, 100),
         (0.8, 90),
@@ -442,15 +272,8 @@ def _score_performance(response_time: float, content_size_bytes: int, request_co
         (99999, 20),
     ])
 
-    local_score = _clamp_score((response_score * 0.55) + (size_score * 0.25) + (request_score * 0.20))
-
-    lighthouse_score = lighthouse.get("scores", {}).get("performance")
-    if lighthouse_score is not None:
-        final_score = _clamp_score((lighthouse_score * 0.45) + (local_score * 0.55))
-        method = "combined(lighthouse+local, balanced)"
-    else:
-        final_score = local_score
-        method = "local"
+    final_score = _clamp_score((response_score * 0.55) + (size_score * 0.25) + (request_score * 0.20))
+    method = "local"
 
     notes = []
     if response_time > 2.0:
@@ -467,8 +290,6 @@ def _score_performance(response_time: float, content_size_bytes: int, request_co
             "response_time_s": round(response_time, 3),
             "content_size_kb": round(content_size_kb, 1),
             "estimated_request_count": request_count,
-            "local_score": local_score,
-            "lighthouse_score": lighthouse_score,
             "notes": notes,
         },
     }
@@ -526,7 +347,7 @@ def _score_security(url: str, headers: Dict[str, str]) -> Dict[str, Any]:
     }
 
 
-def _score_seo(soup: BeautifulSoup, lighthouse: Dict[str, Any]) -> Dict[str, Any]:
+def _score_seo(soup: BeautifulSoup) -> Dict[str, Any]:
     title_text = ""
     if soup.title and soup.title.string:
         title_text = soup.title.string.strip()
@@ -577,15 +398,8 @@ def _score_seo(soup: BeautifulSoup, lighthouse: Dict[str, Any]) -> Dict[str, Any
     if has_schema:
         points += 5
 
-    local_score = _clamp_score(points)
-
-    lighthouse_score = lighthouse.get("scores", {}).get("seo")
-    if lighthouse_score is not None:
-        final_score = _clamp_score((lighthouse_score * 0.6) + (local_score * 0.4))
-        method = "combined(lighthouse+local)"
-    else:
-        final_score = local_score
-        method = "local"
+    final_score = _clamp_score(points)
+    method = "local"
 
     notes = []
     if not title_text:
@@ -607,35 +421,26 @@ def _score_seo(soup: BeautifulSoup, lighthouse: Dict[str, Any]) -> Dict[str, Any
             "h1_count": h1_count,
             "image_alt_coverage": round(alt_coverage, 3),
             "has_schema_org": has_schema,
-            "local_score": local_score,
-            "lighthouse_score": lighthouse_score,
             "notes": notes,
         },
     }
 
 
-def _score_accessibility(soup: BeautifulSoup, lighthouse: Dict[str, Any]) -> Dict[str, Any]:
+def _score_accessibility(soup: BeautifulSoup) -> Dict[str, Any]:
     lang_ok = bool((soup.html.get("lang") or "").strip()) if soup.html else False
     img_alt_coverage = _image_alt_coverage(soup)
     form_label_coverage = _form_label_coverage(soup)
     button_accessibility = _button_accessibility_coverage(soup)
     heading_structure = _heading_order_score(soup)
 
-    local_score = _clamp_score(
+    final_score = _clamp_score(
         (20 if lang_ok else 0)
         + (img_alt_coverage * 20)
         + (form_label_coverage * 20)
         + (button_accessibility * 20)
         + (heading_structure * 20)
     )
-
-    lighthouse_score = lighthouse.get("scores", {}).get("accessibility")
-    if lighthouse_score is not None:
-        final_score = _clamp_score((lighthouse_score * 0.7) + (local_score * 0.3))
-        method = "combined(lighthouse+local)"
-    else:
-        final_score = local_score
-        method = "local"
+    method = "local"
 
     notes = []
     if not lang_ok:
@@ -654,14 +459,12 @@ def _score_accessibility(soup: BeautifulSoup, lighthouse: Dict[str, Any]) -> Dic
             "form_label_coverage": round(form_label_coverage, 3),
             "button_accessibility": round(button_accessibility, 3),
             "heading_structure": round(heading_structure, 3),
-            "local_score": local_score,
-            "lighthouse_score": lighthouse_score,
             "notes": notes,
         },
     }
 
 
-def _score_best_practices(soup: BeautifulSoup, html: str, final_url: str, lighthouse: Dict[str, Any]) -> Dict[str, Any]:
+def _score_best_practices(soup: BeautifulSoup, html: str, final_url: str) -> Dict[str, Any]:
     doctype_ok = html.lstrip().lower().startswith("<!doctype html")
     is_https = urlparse(final_url).scheme == "https"
     mixed_content_items = _has_mixed_content(soup, is_https)
@@ -688,15 +491,8 @@ def _score_best_practices(soup: BeautifulSoup, html: str, final_url: str, lighth
     if insecure_blank_links == 0:
         points += 20
 
-    local_score = _clamp_score(points)
-
-    lighthouse_score = lighthouse.get("scores", {}).get("best_practices")
-    if lighthouse_score is not None:
-        final_score = _clamp_score((lighthouse_score * 0.7) + (local_score * 0.3))
-        method = "combined(lighthouse+local)"
-    else:
-        final_score = local_score
-        method = "local"
+    final_score = _clamp_score(points)
+    method = "local"
 
     notes = []
     if mixed_content_items > 0:
@@ -715,8 +511,6 @@ def _score_best_practices(soup: BeautifulSoup, html: str, final_url: str, lighth
             "deprecated_tag_count": deprecated_count,
             "has_favicon": favicon_ok,
             "insecure_blank_links": insecure_blank_links,
-            "local_score": local_score,
-            "lighthouse_score": lighthouse_score,
             "notes": notes,
         },
     }
@@ -771,7 +565,7 @@ def run_basic_analysis(url: str, timeout: int = 10) -> Dict[str, Any]:
         }
 
 
-def run_full_audit(url: str, timeout: int = 10, use_lighthouse: bool = True) -> Dict[str, Any]:
+def run_full_audit(url: str, timeout: int = 10) -> Dict[str, Any]:
     """Run a complete quality audit with weighted scoring."""
     normalized = normalize_url(url)
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -783,17 +577,6 @@ def run_full_audit(url: str, timeout: int = 10, use_lighthouse: bool = True) -> 
         parsed_html = _extract_basic_html_stats(html)
         soup = parsed_html["soup"]
 
-        lighthouse = {
-            "available": False,
-            "reason": "disabled",
-            "scores": {},
-            "metrics": {},
-            "profile": _lighthouse_runtime_profile(),
-            "cached": False,
-        }
-        if use_lighthouse:
-            lighthouse = _run_lighthouse(fetched["final_url"], timeout=max(timeout * 10, 90))
-
         estimated_request_count = _estimate_request_count(soup)
 
         criteria = {
@@ -801,16 +584,14 @@ def run_full_audit(url: str, timeout: int = 10, use_lighthouse: bool = True) -> 
                 response_time=fetched["elapsed"],
                 content_size_bytes=fetched["content_size_bytes"],
                 request_count=estimated_request_count,
-                lighthouse=lighthouse,
             ),
             "security": _score_security(fetched["final_url"], fetched["headers"]),
-            "seo": _score_seo(soup, lighthouse),
-            "accessibility": _score_accessibility(soup, lighthouse),
+            "seo": _score_seo(soup),
+            "accessibility": _score_accessibility(soup),
             "best_practices": _score_best_practices(
                 soup=soup,
                 html=html,
                 final_url=fetched["final_url"],
-                lighthouse=lighthouse,
             ),
         }
 
@@ -831,7 +612,6 @@ def run_full_audit(url: str, timeout: int = 10, use_lighthouse: bool = True) -> 
             "charset": parsed_html["meta_charset"] or response.encoding,
             "content_size_bytes": fetched["content_size_bytes"],
             "estimated_request_count": estimated_request_count,
-            "lighthouse": lighthouse,
             "criteria": criteria,
             "weights": DEFAULT_WEIGHTS,
             "overall_score": overall_score,
@@ -922,19 +702,6 @@ def _format_full_report(result: Dict[str, Any]) -> str:
         method = criteria.get(name, {}).get("method")
         lines.append(f"  - {name}: {score}/100 ({method})")
 
-    lighthouse = result.get("lighthouse", {})
-    if lighthouse.get("available"):
-        lines.append("Lighthouse: available")
-        profile = lighthouse.get("profile", {})
-        if profile:
-            lines.append(
-                f"  profile: form_factor={profile.get('form_factor')} throttling={profile.get('throttling_method')}"
-            )
-        if lighthouse.get("cached"):
-            lines.append(f"  cache: hit ({lighthouse.get('cache_age_s', '?')}s old)")
-    else:
-        lines.append(f"Lighthouse: unavailable ({lighthouse.get('reason')})")
-
     lines.append("=" * 60)
     return "\n".join(lines) + "\n"
 
@@ -953,13 +720,12 @@ def verificar_url(
     url: str,
     full: bool = False,
     timeout: int = 10,
-    use_lighthouse: bool = True,
     output_format: str = "text",
     report_file: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Compatibility wrapper used by the CLI entry points."""
     if full:
-        result = run_full_audit(url, timeout=timeout, use_lighthouse=use_lighthouse)
+        result = run_full_audit(url, timeout=timeout)
     else:
         result = run_basic_analysis(url, timeout=timeout)
 

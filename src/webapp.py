@@ -3,28 +3,21 @@
 from __future__ import annotations
 
 import os
-import queue
 import threading
 import time
-import uuid
 from collections import defaultdict, deque
-from datetime import datetime, timezone
 from typing import Any, Deque, Dict, Literal, Set, Tuple
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .analyzer import run_basic_analysis, run_full_audit
 from .url_safety import validate_public_url
 
 APP_TITLE = "Web Analyzer API"
-APP_VERSION = "2.3.2"
-
-
-def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+APP_VERSION = "2.4.0"
 
 
 def _int_env(name: str, default: int, minimum: int = 1) -> int:
@@ -35,9 +28,7 @@ def _int_env(name: str, default: int, minimum: int = 1) -> int:
         value = int(raw)
     except ValueError:
         return default
-    if value < minimum:
-        return minimum
-    return value
+    return max(minimum, value)
 
 
 def _load_api_keys() -> Set[str]:
@@ -90,100 +81,6 @@ class FixedWindowRateLimiter:
 
 RATE_LIMITER = FixedWindowRateLimiter()
 
-JOB_QUEUE: "queue.Queue[str]" = queue.Queue()
-JOBS: Dict[str, Dict[str, Any]] = {}
-JOBS_LOCK = threading.Lock()
-WORKER_STARTED = False
-WORKER_LOCK = threading.Lock()
-
-
-def _background_queue_enabled() -> bool:
-    running_in_vercel = bool(os.getenv("VERCEL"))
-    default_enabled = "0" if running_in_vercel else "1"
-    raw = os.getenv("WEB_ANALYZER_ENABLE_BACKGROUND_QUEUE", default_enabled).strip().lower()
-    return raw in {"1", "true", "yes", "on"}
-
-
-def _ensure_worker_started() -> None:
-    global WORKER_STARTED
-    with WORKER_LOCK:
-        if WORKER_STARTED:
-            return
-
-        thread = threading.Thread(target=_job_worker, name="web-analyzer-worker", daemon=True)
-        thread.start()
-        WORKER_STARTED = True
-
-
-def _job_worker() -> None:
-    while True:
-        job_id = JOB_QUEUE.get()
-        try:
-            with JOBS_LOCK:
-                job = JOBS.get(job_id)
-                if not job:
-                    continue
-                job["status"] = "running"
-                job["updated_at"] = _utcnow()
-
-            payload = job["request"]
-            result = run_full_audit(
-                payload["url"],
-                timeout=payload["timeout"],
-                use_lighthouse=payload["use_lighthouse"],
-            )
-
-            with JOBS_LOCK:
-                if result.get("error"):
-                    job["status"] = "failed"
-                    job["error"] = result["error"]
-                else:
-                    job["status"] = "completed"
-                    job["result"] = result
-                job["updated_at"] = _utcnow()
-        except Exception as exc:  # pragma: no cover - defensive fallback
-            with JOBS_LOCK:
-                job = JOBS.get(job_id)
-                if job:
-                    job["status"] = "failed"
-                    job["error"] = str(exc)
-                    job["updated_at"] = _utcnow()
-        finally:
-            JOB_QUEUE.task_done()
-
-
-def _queue_heavy_job(url: str, timeout: int, use_lighthouse: bool, requested_by: str) -> Dict[str, Any]:
-    _ensure_worker_started()
-
-    job_id = uuid.uuid4().hex
-    now = _utcnow()
-
-    job = {
-        "id": job_id,
-        "status": "queued",
-        "created_at": now,
-        "updated_at": now,
-        "requested_by": requested_by,
-        "request": {
-            "url": url,
-            "mode": "full",
-            "timeout": timeout,
-            "use_lighthouse": use_lighthouse,
-        },
-        "result": None,
-        "error": None,
-    }
-
-    with JOBS_LOCK:
-        JOBS[job_id] = job
-
-    JOB_QUEUE.put(job_id)
-
-    return {
-        "job_id": job_id,
-        "status_url": f"/api/jobs/{job_id}",
-    }
-
 
 def _require_api_key(request: Request) -> str:
     valid_keys = _load_api_keys()
@@ -221,8 +118,6 @@ def _apply_rate_limit(request: Request, api_key: str) -> None:
 def reset_runtime_state() -> None:
     """Test helper to clear in-memory runtime state."""
     RATE_LIMITER.clear()
-    with JOBS_LOCK:
-        JOBS.clear()
 
 
 INDEX_HTML = """
@@ -311,14 +206,6 @@ INDEX_HTML = """
       border-color: var(--brand);
       box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
     }
-    .check {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      padding-top: 26px;
-      color: var(--muted);
-      font-size: 14px;
-    }
     button {
       background: linear-gradient(135deg, var(--brand), var(--brand-strong));
       color: #fff;
@@ -403,7 +290,7 @@ INDEX_HTML = """
   <main class="wrap">
     <section class="hero">
       <h1>Web Analyzer</h1>
-      <p>API-protected quality audits with rate-limit and async queue for heavy Lighthouse runs.</p>
+      <p>Local quality audit for performance, security, SEO and accessibility.</p>
     </section>
 
     <section class="panel">
@@ -419,7 +306,7 @@ INDEX_HTML = """
           </div>
         </div>
 
-        <div class="row three">
+        <div class="row two">
           <div>
             <label for="mode">Mode</label>
             <select id="mode" name="mode">
@@ -430,10 +317,6 @@ INDEX_HTML = """
           <div>
             <label for="timeout">Timeout (seconds)</label>
             <input id="timeout" name="timeout" type="number" min="2" max="60" value="10" />
-          </div>
-          <div class="check">
-            <input id="use_lighthouse" name="use_lighthouse" type="checkbox" />
-            <label for="use_lighthouse" style="margin:0">Use Lighthouse (queued)</label>
           </div>
         </div>
 
@@ -497,39 +380,6 @@ INDEX_HTML = """
       resultEl.style.display = 'block';
     }
 
-    async function pollJob(statusUrl, apiKey) {
-      const maxAttempts = 120;
-
-      for (let i = 1; i <= maxAttempts; i += 1) {
-        statusEl.textContent = `Queued job. Polling (${i}/${maxAttempts})...`;
-
-        const response = await fetch(statusUrl, {
-          method: 'GET',
-          headers: {
-            'x-api-key': apiKey,
-          },
-        });
-
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.detail || 'Job status failed');
-        }
-
-        const job = data.job;
-        if (job.status === 'completed') {
-          return job.result;
-        }
-
-        if (job.status === 'failed') {
-          throw new Error(job.error || 'Background job failed');
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-      }
-
-      throw new Error('Timed out while waiting for queued job');
-    }
-
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
 
@@ -538,7 +388,6 @@ INDEX_HTML = """
         url: document.getElementById('url').value,
         mode: document.getElementById('mode').value,
         timeout: Number(document.getElementById('timeout').value || 10),
-        use_lighthouse: document.getElementById('use_lighthouse').checked,
       };
 
       submitBtn.disabled = true;
@@ -559,13 +408,6 @@ INDEX_HTML = """
           throw new Error(data.detail || 'Request failed');
         }
 
-        if (data.queued) {
-          const result = await pollJob(data.status_url, apiKey);
-          renderResult(result, payload.mode);
-          statusEl.textContent = `Queued job completed (${data.job_id})`;
-          return;
-        }
-
         renderResult(data.result, payload.mode);
         statusEl.textContent = `Done in ${data.elapsed_ms}ms`;
       } catch (error) {
@@ -584,27 +426,12 @@ class AnalyzeRequest(BaseModel):
     url: str = Field(..., description="Target URL")
     mode: Literal["basic", "full"] = Field(default="full")
     timeout: int = Field(default=10, ge=2, le=60)
-    use_lighthouse: bool = Field(default=False)
 
 
-class AnalyzeSyncResponse(BaseModel):
+class AnalyzeResponse(BaseModel):
     ok: bool
-    queued: bool = False
     elapsed_ms: int
     result: Dict[str, Any]
-
-
-class AnalyzeQueuedResponse(BaseModel):
-    ok: bool
-    queued: bool = True
-    job_id: str
-    status_url: str
-    message: str
-
-
-class JobStatusResponse(BaseModel):
-    ok: bool
-    job: Dict[str, Any]
 
 
 app = FastAPI(title=APP_TITLE, version=APP_VERSION)
@@ -629,8 +456,6 @@ def health() -> Dict[str, Any]:
         "status": "ok",
         "version": APP_VERSION,
         "auth_configured": bool(_load_api_keys()),
-        "background_queue_enabled": _background_queue_enabled(),
-        "queue_size": JOB_QUEUE.qsize(),
         "rate_limit": {
             "requests": _int_env("WEB_ANALYZER_RATE_LIMIT_REQUESTS", 20, minimum=1),
             "window_seconds": _int_env("WEB_ANALYZER_RATE_LIMIT_WINDOW_SECONDS", 60, minimum=1),
@@ -638,14 +463,8 @@ def health() -> Dict[str, Any]:
     }
 
 
-@app.post(
-    "/api/analyze",
-    responses={
-        200: {"model": AnalyzeSyncResponse},
-        202: {"model": AnalyzeQueuedResponse},
-    },
-)
-def analyze(payload: AnalyzeRequest, request: Request):
+@app.post("/api/analyze", response_model=AnalyzeResponse)
+def analyze(payload: AnalyzeRequest, request: Request) -> AnalyzeResponse:
     started = time.time()
 
     api_key = _require_api_key(request)
@@ -656,33 +475,10 @@ def analyze(payload: AnalyzeRequest, request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # Heavy Lighthouse runs go through async queue.
-    if payload.mode == "full" and payload.use_lighthouse and _background_queue_enabled():
-        queued = _queue_heavy_job(
-            url=safe_url,
-            timeout=payload.timeout,
-            use_lighthouse=True,
-            requested_by=f"{api_key}:{_client_ip(request)}",
-        )
-        return JSONResponse(
-            status_code=202,
-            content={
-                "ok": True,
-                "queued": True,
-                "job_id": queued["job_id"],
-                "status_url": queued["status_url"],
-                "message": "Heavy analysis queued. Poll status_url for completion.",
-            },
-        )
-
     if payload.mode == "basic":
         result = run_basic_analysis(safe_url, timeout=payload.timeout)
     else:
-        result = run_full_audit(
-            safe_url,
-            timeout=payload.timeout,
-            use_lighthouse=payload.use_lighthouse,
-        )
+        result = run_full_audit(safe_url, timeout=payload.timeout)
 
     if result.get("error"):
         error = result["error"]
@@ -693,18 +489,4 @@ def analyze(payload: AnalyzeRequest, request: Request):
         raise HTTPException(status_code=500, detail=f"Analyzer error: {error}")
 
     elapsed_ms = int((time.time() - started) * 1000)
-    return AnalyzeSyncResponse(ok=True, queued=False, elapsed_ms=elapsed_ms, result=result)
-
-
-@app.get("/api/jobs/{job_id}", response_model=JobStatusResponse)
-def get_job_status(job_id: str, request: Request) -> JobStatusResponse:
-    api_key = _require_api_key(request)
-    _apply_rate_limit(request, api_key)
-
-    with JOBS_LOCK:
-        job = JOBS.get(job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found")
-        data = dict(job)
-
-    return JobStatusResponse(ok=True, job=data)
+    return AnalyzeResponse(ok=True, elapsed_ms=elapsed_ms, result=result)
